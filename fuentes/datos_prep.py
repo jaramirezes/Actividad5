@@ -1,50 +1,55 @@
-import os
 import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.impute import SimpleImputer
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
+from google.colab import files
 
-def cargar_y_limpiar_datos(path_raw='datos/datos_ini/car_insurance_claim.csv'):
-    print("--- 1. Carga y Preprocesamiento de Datos ---")
-    if not os.path.exists(path_raw):
-        raise FileNotFoundError(f"No se encontró el archivo en {path_raw}. Coloca tu CSV en datos/datos_ini/")
-        
-    df = pd.read_csv(path_raw)
-    
-    # Limpieza de símbolos monetarios
-    money_cols = ['INCOME', 'HOME_VAL', 'BLUEBOOK', 'OLDCLAIM', 'CLM_AMT']
-    for col in money_cols:
-        if col in df.columns and df[col].dtype == 'object':
-            df[col] = df[col].astype(str).str.replace('$', '', regex=False).str.replace(',', '', regex=False).astype(float)
+def cargar_y_preprocesar_datos(target_col="customer_status", max_unique_categories=50, test_size=0.2, random_state=42):
+    print("Por favor, selecciona el dataset a procesar:")
+    uploaded = files.upload()
 
-    # Variables predictoras y objetivo (CLAIM_FLAG)
-    feature_cols = [
-        'AGE', 'HOMEKIDS', 'YOJ', 'INCOME', 'TRAVTIME', 
-        'BLUEBOOK', 'TIF', 'OLDCLAIM', 'CLM_FREQ', 'MVR_PTS', 
-        'CAR_AGE', 'PARENT1', 'MSTATUS', 'GENDER', 'EDUCATION', 
-        'OCCUPATION', 'CAR_USE', 'CAR_TYPE', 'RED_CAR', 'REVOKED', 'URBANICITY'
-    ]
-    target_col = 'CLAIM_FLAG'
-    
-    feature_cols = [c for c in feature_cols if c in df.columns]
-    X = df[feature_cols]
-    y = df[target_col]
-    
-    # Guardar copia limpia
-    os.makedirs('datos/datos_limp', exist_ok=True)
-    df_clean = pd.concat([X, y], axis=1)
-    df_clean.to_csv('datos/datos_limp/car_insurance_claim_clean.csv', index=False)
-    print("Dataset limpio guardado en 'datos/datos_limp/'")
-    
-    return train_test_split(X, y, test_size=0.20, random_state=42, stratify=y)
+    file_name = list(uploaded.keys())[0]
+    df = pd.read_csv(file_name)
+    print(f"\nDataset '{file_name}' cargado exitosamente.")
 
-def obtener_preprocesador(X_train):
-    num_cols = X_train.select_dtypes(include=['int64', 'float64']).columns
-    cat_cols = X_train.select_dtypes(include=['object', 'bool']).columns
+    # 1. Definir target y separar X / y
+    if target_col in df.columns:
+        X = df.drop(columns=[target_col])
+        y = df[target_col]
+    else:
+        X = df.iloc[:, :-1]
+        y = df.iloc[:, -1]
 
-    return ColumnTransformer(transformers=[
-        ('num', Pipeline([('imputer', SimpleImputer(strategy='median')), ('scaler', StandardScaler())]), num_cols),
-        ('cat', Pipeline([('imputer', SimpleImputer(strategy='most_frequent')), ('onehot', OneHotEncoder(handle_unknown='ignore'))]), cat_cols)
-    ])
+    # 2. Filtro de limpieza inteligente (alta cardinalidad)
+    cols_a_eliminar = [col for col in X.select_dtypes(include=['object']).columns
+                       if X[col].nunique() > max_unique_categories]
+
+    if cols_a_eliminar:
+        print(f"\nEliminando {len(cols_a_eliminar)} columnas con alta cardinalidad: {cols_a_eliminar}")
+        X = X.drop(columns=cols_a_eliminar)
+
+    # 3. Transformación de categóricas e imputación de nulos
+    X = pd.get_dummies(X, drop_first=True)
+    X = X.fillna(X.mean(numeric_only=True))
+
+    # 4. Escalado de datos
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    X = pd.DataFrame(X_scaled, columns=X.columns)
+
+    # Guardar y descargar en Colab
+    df_limpio_exportar = X.copy()
+    df_limpio_exportar[target_col] = y.values
+
+    nombre_archivo_salida = "car_insurance_claim_datos_limpios.csv"
+    df_limpio_exportar.to_csv(nombre_archivo_salida, index=False)
+    print(f"\n[INFO] Archivo guardado. Descargando automáticamente...")
+    files.download(nombre_archivo_salida)
+
+    # 5. División en Train / Test
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state
+    )
+
+    print("\n¡Datos preprocesados y divididos exitosamente!")
+    return X, y, X_train, X_test, y_train, y_test, df
